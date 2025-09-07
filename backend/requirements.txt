@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+databricks-sdk
+python-dotenv
+requests
+python-multipart
+PyYAML
+PyPDF2 
+pandas
+openpyxl
+mdpd
