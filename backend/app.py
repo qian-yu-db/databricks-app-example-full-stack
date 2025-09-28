@@ -16,10 +16,15 @@ import io
 
 try:
     import pandas as pd
-    import mdpd
     EXCEL_AVAILABLE = True
+    try:
+        from bs4 import BeautifulSoup
+        BEAUTIFULSOUP_AVAILABLE = True
+    except ImportError:
+        BEAUTIFULSOUP_AVAILABLE = False
 except ImportError:
     EXCEL_AVAILABLE = False
+    BEAUTIFULSOUP_AVAILABLE = False
 
 def load_yaml_config():
     """Load configuration from app.yaml file"""
@@ -60,11 +65,9 @@ class ParseRequest(BaseModel):
 # Add new Pydantic models after existing ones
 class WriteToTableRequest(BaseModel):
     file_paths: List[str]
-    limit: int = 10
 
 class QueryDeltaTableRequest(BaseModel):
     file_paths: List[str] = []
-    limit: int = 10
 
 # Helper functions
 def get_uc_volume_path() -> str:
@@ -74,6 +77,46 @@ def get_uc_volume_path() -> str:
 def get_delta_table_path() -> str:
     """Get the current Delta table path"""  
     return current_delta_table_path or "main.default.ai_functions_demo_documents"
+
+def parse_html_table_to_dataframe(html_content: str) -> pd.DataFrame:
+    """Parse HTML table content to pandas DataFrame"""
+    if not EXCEL_AVAILABLE:
+        raise Exception("Excel dependencies not available")
+    
+    try:
+        # Try pandas' read_html first (requires lxml)
+        from io import StringIO
+        tables = pd.read_html(StringIO(html_content))
+        if len(tables) > 0:
+            return tables[0]  # Return the first table found
+    except Exception as pandas_error:
+        print(f"pandas.read_html failed: {pandas_error}")
+        
+        # Fallback to BeautifulSoup parsing if available
+        if BEAUTIFULSOUP_AVAILABLE:
+            try:
+                soup = BeautifulSoup(html_content, 'html.parser')
+                table = soup.find('table')
+                if table:
+                    rows = []
+                    for tr in table.find_all('tr'):
+                        cells = []
+                        for td in tr.find_all(['td', 'th']):
+                            cells.append(td.get_text(strip=True))
+                        if cells:
+                            rows.append(cells)
+                    if rows and len(rows) > 1:
+                        # Use first row as headers if available
+                        return pd.DataFrame(rows[1:], columns=rows[0])
+                    elif rows:
+                        # Single row, no headers
+                        return pd.DataFrame(rows)
+            except Exception as bs_error:
+                print(f"BeautifulSoup parsing failed: {bs_error}")
+        
+        # Final fallback: treat as plain text
+        print("Using plain text fallback")
+        return pd.DataFrame({'Content': [html_content.strip()]})
 
 # Initialize Databricks client - uses automatic authentication in Databricks Apps
 try:
@@ -415,60 +458,63 @@ def write_to_delta_table(request: WriteToTableRequest):
         processed_data AS (
           SELECT
               path,
-              ai_parse_document(content) as parsed_result,
+              ai_parse_document(content) as parsed,
               content
           FROM file_data
         ),
-        context as 
+        elements as 
         (
-          select
-              path,
-              ifnull(page_value:header, 'None') as header,
-              page_value:footer as footer,
-              cast(page_value:id as string) as page_id
-          from
-          (
-              SELECT 
-                  path,
-                  parsed_result,
-                  e.value as page_value
-              FROM processed_data,
-              LATERAL variant_explode(parsed_result:document:pages) AS e
-          )
-        ),
-        tables as (
             select
-                path,
-                monotonically_increasing_id() + 1 as table_id,
-                cast(element_value:content as string)as table,
-                cast(element_value:page_id as int) as page_id,
-                concat('table_' || table_id || '_page_' || page_id) as table_name
+              path,
+              cast(items:id as int) as element_id,
+              cast(items:type as string) as type,
+              cast(items:bbox[0]:coord as ARRAY<INT>) as bbox,
+              cast(items:bbox[0]:page_id as int) as page_id,
+              CASE 
+                WHEN cast(items:type as string) = 'figure' THEN cast(items:description as string)
+                ELSE cast(items:content as string)
+              END as content,
+              cast(items:description as string) as description
             from
             (
-                SELECT 
-                    path,
-                    parsed_result,
-                    e.value as element_value
-                FROM processed_data,
-                LATERAL variant_explode(parsed_result:document:elements) AS e
+              SELECT
+                path,
+                posexplode(try_cast(parsed:document:elements AS ARRAY<VARIANT>)) AS (idx, items)
+              FROM processed_data
+              WHERE
+                parsed:document:elements IS NOT NULL
+                AND CAST(parsed:error_status AS STRING) IS NULL
             )
-            where
-                variant_get(
-                    element_value,
-                    '$.type',
-                    'STRING'
-                ) = 'table'
+        ),
+        tables_and_context as (
+            select
+                path,
+                page_id,
+                max(case when type = 'table' then content_by_type end) as table,
+                max(case when type = 'page_header' then content_by_type end) as header,
+                max(case when type = 'page_footer' then content_by_type end) as footer
+            from
+            (
+                select
+                  path,
+                  page_id,
+                  type,
+                  concat_ws('\n', collect_list(content)) AS content_by_type
+                from elements
+                group by path, page_id, type
+            )
+            group by path, page_id
         )
         select
-            t.path, 
-            t.table_id,
-            t.table,
-            cast(t.page_id as int) as page_id,
-            t.table_name,
-            c.header,
-            c.footer
-        from tables t 
-        left join context c on t.path = c.path and t.page_id = c.page_id
+            path, 
+            row_number() over (partition by path order by page_id) as table_id,
+            table,
+            cast(page_id as int) as page_id,
+            concat('table_' || table_id || '_page_' || page_id) as table_name,
+            header,
+            footer
+        from tables_and_context
+        where table is not null
         """
         
         print(f"Executing INSERT for {file_path}")
@@ -575,7 +621,6 @@ def query_delta_table(request: QueryDeltaTableRequest):
         FROM IDENTIFIER('{destination_table}')
         {where_clause}
         ORDER BY page_id
-        LIMIT {request.limit}
         """
         
         print(f"Executing query: {query}")
@@ -632,7 +677,7 @@ def generate_excel(request: GenerateExcelRequest):
         raise HTTPException(status_code=500, detail="DATABRICKS_WAREHOUSE_ID is not set.")
     
     if not EXCEL_AVAILABLE:
-        raise HTTPException(status_code=500, detail="Excel dependencies not available. Install pandas, openpyxl, and mdpd.")
+        raise HTTPException(status_code=500, detail="Excel dependencies not available. Install pandas and openpyxl.")
 
     if not request.file_paths:
         raise HTTPException(status_code=400, detail="file_paths is required")
@@ -700,8 +745,8 @@ def generate_excel(request: GenerateExcelRequest):
                 
                 try:
                     if table_content.strip():
-                        # Parse markdown table content using mdpd
-                        df_t = mdpd.from_md(table_content)
+                        # Parse HTML table content (ai_parse_document returns HTML format)
+                        df_t = parse_html_table_to_dataframe(table_content)
                         df_h = pd.DataFrame([[header]], columns=['header'])
                         df_f = pd.DataFrame([[footer]], columns=['footer'])
                         df_h.to_excel(writer, sheet_name=sheet_name, index=False, startrow=0)
@@ -714,7 +759,7 @@ def generate_excel(request: GenerateExcelRequest):
                 except Exception as e:
                     print(f"Error parsing table {table_name}: {e}")
                     # Create a simple sheet with the error info
-                    error_df = pd.DataFrame({'Error': [f"Failed to parse table: {str(e)}"], 'Content': [table_content[:200]]})
+                    error_df = pd.DataFrame({'Error': [f"Failed to parse HTML table: {str(e)}"], 'Content': [table_content[:200]]})
                     error_df.to_excel(writer, sheet_name=f"error_{sheet_name}", index=False)
                     continue
             
