@@ -73,6 +73,7 @@ export default function DocumentIntelligencePage() {
     const [deltaTableError, setDeltaTableError] = useState<string | null>(null);
     const [processedSessionFiles, setProcessedSessionFiles] = useState<string[]>([]);
     const [showDeltaTableResults, setShowDeltaTableResults] = useState(false);
+    const [selectedTableIndex, setSelectedTableIndex] = useState<number>(0);
 
     // AI Functions test state
     const [aiTestLoading, setAiTestLoading] = useState(false);
@@ -409,8 +410,7 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    file_paths: filePaths,
-                    limit: 10
+                    file_paths: filePaths
                 })
             }).then(() => {
                 console.log("Write operation completed in background");
@@ -422,6 +422,7 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
             setProcessedSessionFiles(filePaths);
             setShowDeltaTableResults(true);
             setDeltaTableResults([]);
+            setSelectedTableIndex(0); // Reset selection
             setDeltaTableError("Processing document... This may take 1-2 minutes for large files.");
             
             console.log("Starting polling for results...");
@@ -444,14 +445,14 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
                             "Content-Type": "application/json"
                         },
                         body: JSON.stringify({
-                            file_paths: filePaths,
-                            limit: 10
+                            file_paths: filePaths
                         })
                     });
                     
                     if (queryResult.success && queryResult.data && queryResult.data.length > 0) {
                         // SUCCESS: Found results!
                         setDeltaTableResults(queryResult.data);
+                        setSelectedTableIndex(0); // Reset to first table
                         setDeltaTableError(null);
                         setDeltaTableLoading(false);
                         console.log(`SUCCESS: Retrieved ${queryResult.data.length} results after ${attemptCount + 1} attempts`);
@@ -513,8 +514,7 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    file_paths: filePaths,
-                    limit: 10
+                    file_paths: filePaths
                 })
             });
             
@@ -533,8 +533,7 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
                             "Content-Type": "application/json"
                         },
                         body: JSON.stringify({
-                            file_paths: filePaths,
-                            limit: 10
+                            file_paths: filePaths
                         })
                     });
                     
@@ -596,8 +595,7 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    file_paths: processedSessionFiles,
-                    limit: 20
+                    file_paths: processedSessionFiles
                 })
             });
 
@@ -611,6 +609,7 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
             
             if (result.success) {
                 setDeltaTableResults(result.data || []);
+                setSelectedTableIndex(0); // Reset to first table
                 console.log(`Set ${result.data?.length || 0} delta table results`);
             } else {
                 throw new Error(result.error || result.message || "Query failed");
@@ -745,38 +744,208 @@ Click the "Process" button to upload this file to UC Volume and extract its cont
             );
         }
 
+        // Get the selected table result
+        const selectedResult = deltaTableResults[selectedTableIndex];
+        
         return (
             <div className="space-y-4">
-                <div className="text-sm text-gray-600 mb-4">
-                    Showing {deltaTableResults.length} extracted tables from delta table: {deltaTablePathConfig.delta_table_path}
+                <div className="flex items-center justify-between mb-4">
+                    <div className="text-sm text-gray-600">
+                        Found {deltaTableResults.length} extracted tables from delta table: {deltaTablePathConfig.delta_table_path}
+                    </div>
+                    
+                    {/* Table Selection Dropdown */}
+                    {deltaTableResults.length > 1 && (
+                        <div className="flex items-center space-x-2">
+                            <label className="text-sm text-gray-600">View table:</label>
+                            <select
+                                value={selectedTableIndex}
+                                onChange={(e) => setSelectedTableIndex(Number(e.target.value))}
+                                className="border border-gray-300 rounded px-2 py-1 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                {deltaTableResults.map((result, index) => (
+                                    <option key={index} value={index}>
+                                        {index + 1}. {result.table_name || `Table ${result.table_id}`} 
+                                        {result.path ? ` (${result.path.split('/').pop()})` : ''}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
                 </div>
-                {deltaTableResults.map((result, index) => (
-                    <div key={index} className="border rounded p-4 bg-gray-50">
+
+                {/* Display Selected Table */}
+                {selectedResult && (
+                    <div className="border rounded p-4 bg-gray-50">
                         <div className="font-medium text-sm mb-2 text-blue-600">
-                            {result.table_name || `Table ${result.table_id}`}
+                            {selectedResult.table_name || `Table ${selectedResult.table_id}`}
                         </div>
                         <div className="text-xs text-gray-500 mb-3 space-y-1">
-                            <div>File: {result.path?.split('/').pop() || 'Unknown file'}</div>
-                            <div>Page: {result.page_id !== undefined ? result.page_id : 'Unknown'}</div>
-                            <div>Table ID: {result.table_id}</div>
+                            <div>File: {selectedResult.path?.split('/').pop() || 'Unknown file'}</div>
+                            <div>Page: {selectedResult.page_id !== undefined ? selectedResult.page_id : 'Unknown'}</div>
+                            <div>Table ID: {selectedResult.table_id}</div>
                         </div>
                         
                         {/* Table Content Display */}
                         <div className="mb-3">
                             <div className="font-medium text-xs text-green-600 mb-1">Table Content (ai_parse_document):</div>
                             <div className="bg-white p-3 rounded border text-sm max-h-64 overflow-y-auto">
-                                <pre className="whitespace-pre-wrap font-mono text-xs">
-                                    {result.table || 'No table content available'}
-                                </pre>
+                                {selectedResult.table && selectedResult.table.trim() ? (
+                                    <div>
+                                        {/* Force render as HTML table with comprehensive inline styles */}
+                                        <div 
+                                            dangerouslySetInnerHTML={{ __html: selectedResult.table }}
+                                            style={{
+                                                fontSize: '9px',
+                                                lineHeight: '1.3',
+                                                // CSS for table elements
+                                                '--table-border': '1px solid #d1d5db',
+                                                '--table-bg-header': '#f3f4f6',
+                                                '--table-bg-even': '#f9fafb'
+                                            }}
+                                            className="table-html-container"
+                                        />
+                                        <style jsx>{`
+                                            .table-html-container table {
+                                                border-collapse: collapse !important;
+                                                width: 100% !important;
+                                                border: var(--table-border) !important;
+                                                font-size: 9px !important;
+                                            }
+                                            .table-html-container th,
+                                            .table-html-container td {
+                                                border: var(--table-border) !important;
+                                                padding: 4px 6px !important;
+                                                text-align: left !important;
+                                                vertical-align: top !important;
+                                            }
+                                            .table-html-container th {
+                                                background-color: var(--table-bg-header) !important;
+                                                font-weight: 600 !important;
+                                            }
+                                            .table-html-container tr:nth-child(even) {
+                                                background-color: var(--table-bg-even) !important;
+                                            }
+                                        `}</style>
+                                        
+                                        {/* Also show raw content for comparison */}
+                                        <details className="mt-2">
+                                            <summary className="text-xs text-gray-500 cursor-pointer">Show raw HTML</summary>
+                                            <pre className="whitespace-pre-wrap text-xs font-mono bg-gray-50 p-2 rounded mt-1 border">
+                                                {selectedResult.table}
+                                            </pre>
+                                        </details>
+                                    </div>
+                                ) : (
+                                    <div className="text-gray-500 text-xs">No table content available</div>
+                                )}
                             </div>
                         </div>
                         
                         {/* Metadata */}
                         <div className="text-xs text-gray-400 bg-gray-100 p-2 rounded">
-                            <strong>Extraction Info:</strong> Extracted table from page {result.page_id !== undefined ? result.page_id : 'N/A'} using ai_parse_document function
+                            <strong>Extraction Info:</strong> Extracted table from page {selectedResult.page_id !== undefined ? selectedResult.page_id : 'N/A'} using ai_parse_document function
                         </div>
                     </div>
-                ))}
+                )}
+
+                {/* Show all tables option */}
+                {deltaTableResults.length > 1 && (
+                    <div className="text-center">
+                        <button
+                            onClick={() => setSelectedTableIndex(-1)}
+                            className={`text-sm px-3 py-1 rounded ${
+                                selectedTableIndex === -1 
+                                    ? 'bg-blue-100 text-blue-700 border border-blue-300' 
+                                    : 'text-blue-600 hover:text-blue-800 underline'
+                            }`}
+                        >
+                            {selectedTableIndex === -1 ? 'Showing all tables' : 'Show all tables'}
+                        </button>
+                    </div>
+                )}
+
+                {/* Show all tables when selectedTableIndex is -1 */}
+                {selectedTableIndex === -1 && (
+                    <div className="space-y-4 mt-4">
+                        <div className="text-sm font-medium text-gray-700 border-t pt-4">
+                            All Tables ({deltaTableResults.length}):
+                        </div>
+                        {deltaTableResults.map((result, index) => (
+                            <div key={index} className="border rounded p-4 bg-gray-50">
+                                <div className="font-medium text-sm mb-2 text-blue-600">
+                                    {index + 1}. {result.table_name || `Table ${result.table_id}`}
+                                </div>
+                                <div className="text-xs text-gray-500 mb-3 space-y-1">
+                                    <div>File: {result.path?.split('/').pop() || 'Unknown file'}</div>
+                                    <div>Page: {result.page_id !== undefined ? result.page_id : 'Unknown'}</div>
+                                    <div>Table ID: {result.table_id}</div>
+                                </div>
+                                
+                                {/* Table Content Display */}
+                                <div className="mb-3">
+                                    <div className="font-medium text-xs text-green-600 mb-1">Table Content (ai_parse_document):</div>
+                                    <div className="bg-white p-3 rounded border text-sm max-h-64 overflow-y-auto">
+                                        {result.table && result.table.trim() ? (
+                                            <div>
+                                                {/* Force render as HTML table with comprehensive inline styles */}
+                                                <div 
+                                                    dangerouslySetInnerHTML={{ __html: result.table }}
+                                                    style={{
+                                                        fontSize: '9px',
+                                                        lineHeight: '1.3',
+                                                        // CSS for table elements
+                                                        '--table-border': '1px solid #d1d5db',
+                                                        '--table-bg-header': '#f3f4f6',
+                                                        '--table-bg-even': '#f9fafb'
+                                                    }}
+                                                    className="table-html-container"
+                                                />
+                                                <style jsx>{`
+                                                    .table-html-container table {
+                                                        border-collapse: collapse !important;
+                                                        width: 100% !important;
+                                                        border: var(--table-border) !important;
+                                                        font-size: 9px !important;
+                                                    }
+                                                    .table-html-container th,
+                                                    .table-html-container td {
+                                                        border: var(--table-border) !important;
+                                                        padding: 4px 6px !important;
+                                                        text-align: left !important;
+                                                        vertical-align: top !important;
+                                                    }
+                                                    .table-html-container th {
+                                                        background-color: var(--table-bg-header) !important;
+                                                        font-weight: 600 !important;
+                                                    }
+                                                    .table-html-container tr:nth-child(even) {
+                                                        background-color: var(--table-bg-even) !important;
+                                                    }
+                                                `}</style>
+                                                
+                                                {/* Also show raw content for comparison */}
+                                                <details className="mt-2">
+                                                    <summary className="text-xs text-gray-500 cursor-pointer">Show raw HTML</summary>
+                                                    <pre className="whitespace-pre-wrap text-xs font-mono bg-gray-50 p-2 rounded mt-1 border">
+                                                        {result.table}
+                                                    </pre>
+                                                </details>
+                                            </div>
+                                        ) : (
+                                            <div className="text-gray-500 text-xs">No table content available</div>
+                                        )}
+                                    </div>
+                                </div>
+                                
+                                {/* Metadata */}
+                                <div className="text-xs text-gray-400 bg-gray-100 p-2 rounded">
+                                    <strong>Extraction Info:</strong> Extracted table from page {result.page_id !== undefined ? result.page_id : 'N/A'} using ai_parse_document function
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
         );
     };

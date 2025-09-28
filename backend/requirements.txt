@@ -8,4 +8,5 @@ PyYAML
 PyPDF2 
 pandas
 openpyxl
-mdpd
+lxml
+beautifulsoup4

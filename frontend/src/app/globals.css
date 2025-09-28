@@ -120,3 +120,47 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Styles for rendering HTML tables from ai_parse_document */
+.table-display {
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.table-display table {
+  border-collapse: collapse !important;
+  width: 100% !important;
+  margin: 0 !important;
+  border: 1px solid #d1d5db !important;
+  background: white !important;
+}
+
+.table-display th,
+.table-display td {
+  border: 1px solid #d1d5db !important;
+  padding: 4px 6px !important;
+  text-align: left !important;
+  vertical-align: top !important;
+  word-wrap: break-word !important;
+  max-width: 150px !important;
+  font-size: 9px !important;
+}
+
+.table-display th {
+  background-color: #f3f4f6 !important;
+  font-weight: 600 !important;
+  color: #374151 !important;
+}
+
+.table-display td {
+  color: #6b7280 !important;
+  background-color: white !important;
+}
+
+.table-display tbody tr:nth-child(even) td {
+  background-color: #f9fafb !important;
+}
+
+.table-display tr:hover td {
+  background-color: #f0f9ff !important;
+}
